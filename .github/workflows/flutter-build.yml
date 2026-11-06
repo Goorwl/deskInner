@@ -1130,6 +1130,19 @@ jobs:
           # Opt-in, and its macOS tests run nowhere else.
           cargo test --locked --release -p clipboard --features unix-file-copy-paste
 
+      # [LAN-ONLY] build.py copies target/release/service into the app bundle AFTER
+      # Xcode's ad-hoc signing, which breaks the bundle seal. On Apple Silicon a
+      # broken signature is killed at launch with no override, even after removing
+      # quarantine. Re-sign ad-hoc here so the unsigned dmg is actually launchable.
+      # When a Developer ID cert is present the later signed step overwrites this.
+      - name: Ad-hoc re-sign unsigned macOS app
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          bash ./.github/scripts/sign-macos-app.sh \
+            ./flutter/build/macos/Build/Products/Release/RustDesk.app \
+            - \
+            ./flutter/macos/Runner/Release.entitlements
+
       - name: create unsigned dmg
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
