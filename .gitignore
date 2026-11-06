@@ -14,9 +14,16 @@ src/version.rs
 *tgz
 cert.pfx
 *.bak
-*png
-*svg
-*jpg
+# [LAN-ONLY] Source image assets (res/, libs/portable/src/res/, flutter/assets/,
+# AppIcon.appiconset, etc.) are REQUIRED by the build: some are pulled in by
+# include_bytes! / Flutter asset bundling / WiX and Xcode resource steps.
+# Ignoring every *.png/*.svg/*.jpg made the re-initialized source snapshot lose
+# them, so CI failed with "couldn't read libs/portable/src/./res/label.png" and
+# "cp: cannot stat '../res/128x128@2x.png'". Only ignore generated images at
+# the repository root, not checked-in source assets.
+/*.png
+/*.svg
+/*.jpg
 sciter.dll
 **pdb
 src/bridge_generated.rs

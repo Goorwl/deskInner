@@ -19,6 +19,10 @@ on:
 
 jobs:
   run-ci:
+    # [LAN-ONLY] Same static permission ceiling as flutter-nightly.yml:
+    # nested generate-sbom / publish-signed-update-metadata request contents:write.
+    permissions:
+      contents: write
     uses: ./.github/workflows/flutter-build.yml
     with:
       upload-artifact: false

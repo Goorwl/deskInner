@@ -1,9 +1,11 @@
-name: Flutter Nightly Build
+name: LAN Desktop Packages (macOS arm64 + Windows x64)
 
 on:
-  schedule:
-    # schedule build every night
-    - cron: "0 0 * * *"
+  # [LAN-ONLY] Daily full-matrix nightly is disabled. This fork only ships the
+  # two LAN desktop installers; running ~20 upstream jobs every night needs a
+  # signing/relay service the fork does not have and fails on Android/iOS/Linux.
+  # schedule:
+  #   - cron: "0 0 * * *"
   workflow_dispatch:
 
 jobs:
@@ -20,5 +22,8 @@ jobs:
     secrets: inherit
     with:
       upload-artifact: true
-      upload-tag: "nightly"
+      upload-tag: "lan-desktop"
+      # [LAN-ONLY] Skip Android / iOS / Linux / Sciter and the extra CPU arches;
+      # only the Apple Silicon dmg and the Windows x64 installer are built.
+      desktop-only: true
       publish-update-metadata: ${{ github.repository == 'rustdesk/rustdesk' }}
