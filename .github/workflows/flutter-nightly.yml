@@ -8,6 +8,14 @@ on:
 
 jobs:
   run-flutter-nightly-build:
+    # [LAN-ONLY] flutter-build.yml contains jobs (generate-sbom,
+    # publish-signed-update-metadata) requesting contents: write. A reusable
+    # workflow may not exceed its caller's permission ceiling, and this fork
+    # defaults to contents: read, so the whole workflow fails to parse without
+    # an explicit grant here. The publish-signed-update-metadata job itself is
+    # still skipped in forks (its if requires github.repository == rustdesk/rustdesk).
+    permissions:
+      contents: write
     uses: ./.github/workflows/flutter-build.yml
     secrets: inherit
     with:
