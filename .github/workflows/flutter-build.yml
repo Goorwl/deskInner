@@ -3033,3 +3033,41 @@ jobs:
           tag_name: ${{ env.TAG_NAME }}
           files: |
             flutter/build/rustdesk-${{ env.VERSION }}-${{ env.RELEASE_NAME }}.tar.gz
+
+  # [LAN-ONLY] desktop-only builds skip every upstream Release publishing step
+  # (a fork has SIGN_BASE_URL == "-2", so signed uploads never run). That left
+  # the dmg/exe/msi only as Actions artifacts and the Releases page empty.
+  # Collect the two installer artifacts once both builds succeed and publish
+  # them to the nightly Release with the built-in GITHUB_TOKEN instead.
+  publish-lan-release:
+    needs: [build-for-windows-flutter, build-for-macOS]
+    if: ${{ inputs.desktop-only && inputs.upload-artifact }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Windows installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: rustdesk-lan-windows-*
+          path: pkgs
+          merge-multiple: true
+      - name: Download macOS dmg
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: rustdesk-unsigned-macos-*
+          path: pkgs
+          merge-multiple: true
+      - name: Publish installers to nightly Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find pkgs -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) | sort)
+          test "${#files[@]}" -gt 0
+          printf 'publishing %s installer(s)\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+          gh release view nightly >/dev/null 2>&1 || \
+            gh release create nightly --prerelease --title nightly \
+              --notes "LAN-only desktop packages (unsigned / ad-hoc signed)."
+          gh release upload nightly "${files[@]}" --clobber
+          gh release view nightly --json assets --jq '.assets[].name'
