@@ -22,7 +22,10 @@ jobs:
     secrets: inherit
     with:
       upload-artifact: true
-      upload-tag: "lan-desktop"
+      # [LAN-ONLY] publish-lan-release targets env.TAG_NAME (this input). Keep
+      # it on the single rolling "nightly" Release; a different tag here would
+      # create a second Release and split the installers across two pages.
+      upload-tag: "nightly"
       # [LAN-ONLY] Skip Android / iOS / Linux / Sciter and the extra CPU arches;
       # only the Apple Silicon dmg and the Windows x64 installer are built.
       desktop-only: true
