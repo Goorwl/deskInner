@@ -965,7 +965,7 @@ jobs:
           submodules: recursive
 
       - name: Import the codesign cert
-        if: env.MACOS_P12_BASE64 != null
+        if: env.MACOS_P12_BASE64 != ''
         uses: apple-actions/import-codesign-certs@253ddeeac23f2bdad1646faac5c8c2832e800071 # v1
         with:
           p12-file-base64: ${{ secrets.MACOS_P12_BASE64 }}
@@ -973,7 +973,7 @@ jobs:
           keychain: rustdesk
 
       - name: Check sign and import sign key
-        if: env.MACOS_P12_BASE64 != null
+        if: env.MACOS_P12_BASE64 != ''
         run: |
           security default-keychain -s rustdesk.keychain
           security find-identity -v
@@ -983,19 +983,26 @@ jobs:
       # it once on this runner. Developer ID builds chain to Apple already and
       # are skipped (they set MACOS_NOTARIZE_JSON).
       - name: Trust self-signed codesign certificate
-        if: env.MACOS_P12_BASE64 != null && env.MACOS_NOTARIZE_JSON == ''
+        if: env.MACOS_P12_BASE64 != '' && env.MACOS_NOTARIZE_JSON == ''
+        # [LAN-ONLY] add-trusted-cert can hang on a trustd GUI prompt on hosted
+        # runners. Cap the step and degrade to a warning instead of failing the
+        # whole macOS job: the on-device test showed the imported p12 alone is
+        # enough for `codesign -s <CN>` to resolve a valid identity.
+        timeout-minutes: 2
+        continue-on-error: true
         env:
           P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
         run: |
           printf '%s' "$P12_BASE64" | base64 --decode > /tmp/rd-codesign.p12
           openssl pkcs12 -in /tmp/rd-codesign.p12 -passin "pass:$P12_PASSWORD" -nokeys -clcerts -out /tmp/rd-codesign.pem
-          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/rd-codesign.pem
+          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/rd-codesign.pem \
+            || echo "::warning::Self-signed cert trust failed; the imported p12 identity is still used by codesign."
           rm -f /tmp/rd-codesign.p12 /tmp/rd-codesign.pem
           security find-identity -v -p codesigning || true
 
       - name: Import notarize key
-        if: env.MACOS_P12_BASE64 != null && env.MACOS_NOTARIZE_JSON != ''
+        if: env.MACOS_P12_BASE64 != '' && env.MACOS_NOTARIZE_JSON != ''
         uses: timheuer/base64-to-file@adaa40c0c581f276132199d4cf60afa07ce60eac # v1.2
         with:
           # https://gregoryszorc.com/docs/apple-codesign/stable/apple_codesign_rcodesign.html#notarizing-and-stapling
@@ -1004,7 +1011,7 @@ jobs:
           encodedString: ${{ secrets.MACOS_NOTARIZE_JSON }}
 
       - name: Install rcodesign tool
-        if: env.MACOS_P12_BASE64 != null && env.MACOS_NOTARIZE_JSON != ''
+        if: env.MACOS_P12_BASE64 != '' && env.MACOS_NOTARIZE_JSON != ''
         shell: bash
         run: |
           pushd /tmp
@@ -1201,12 +1208,15 @@ jobs:
       # Verified on macOS 27.2: two different Mach-O binaries signed with one
       # self-signed identity produced identical DRs; ad-hoc signing produced
       # different `cdhash H"..."` DRs and loses the grant on every rebuild.
-      # If the DR printed by sign-macos-app.sh still contains `cdhash`, the cert
-      # was not trusted on this runner (find-identity shows 0 valid identities)
-      # and codesign kept the earlier ad-hoc signature. Check the
-      # "Trust self-signed codesign certificate" step.
+      # NOTE: sign-macos-app.sh runs TWICE when these secrets are set - once in
+      # "Ad-hoc re-sign" (-s -) and once here. A `cdhash H"..."` DR from the
+      # FIRST call is expected. Only the DR printed inside THIS step is
+      # authoritative. If it still contains cdhash, `codesign -s <identity>`
+      # could not resolve the certificate; the script has `set -euo pipefail`
+      # and fails this step, it does NOT silently keep the ad-hoc signature.
+      # Check "Import the codesign cert" / "Trust self-signed codesign certificate".
       - name: Codesign app and create signed dmg
-        if: env.MACOS_P12_BASE64 != null && env.UPLOAD_ARTIFACT == 'true'
+        if: env.MACOS_P12_BASE64 != '' && env.UPLOAD_ARTIFACT == 'true'
         env:
           MACOS_SIGN_MODE: ${{ env.MACOS_NOTARIZE_JSON != '' && 'developerid' || 'selfsigned' }}
         run: |
@@ -1269,7 +1279,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload signed macOS DMG
-        if: env.UPLOAD_ARTIFACT == 'true' && env.PUBLISH_UPDATE_METADATA == 'true' && env.MACOS_P12_BASE64 != null
+        if: env.UPLOAD_ARTIFACT == 'true' && env.PUBLISH_UPDATE_METADATA == 'true' && env.MACOS_P12_BASE64 != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-${{ matrix.job.arch }}-dmg

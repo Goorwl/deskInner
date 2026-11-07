@@ -51,9 +51,14 @@ codesign --verify --deep --strict --verbose=2 "$app_path"
 #   self-signed cert     -> identifier + certificate leaf = H"<fp>"  -> identical
 #   Apple-issued cert    -> the above + anchor apple generic           -> identical
 # A fixed certificate identity therefore keeps grants across rebuilds, Apple
-# issued or not. If the DR below still contains `cdhash`, the certificate was
-# not trusted on this runner (find-identity shows 0 valid identities) and
-# codesign kept the earlier ad-hoc signature. Keep this in CI logs for auditing.
+# issued or not.
+# NOTE: this script runs TWICE when MACOS_* secrets are configured (first in
+# "Ad-hoc re-sign" with -s -, then in "Codesign app and create signed dmg").
+# A cdhash DR from the first call is EXPECTED; only the second call is
+# authoritative. If that one still contains cdhash, `codesign -s` could not
+# resolve the identity - under `set -euo pipefail` this fails the step, it does
+# not silently fall back to ad-hoc. Check the cert import / trust steps.
+echo "sign mode: ${MACOS_SIGN_MODE:-adhoc}"
 echo "=== designated requirement for $app_path ==="
 codesign -d -r- "$app_path" 2>&1 || true
 
