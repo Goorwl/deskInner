@@ -41,8 +41,11 @@ class PeerTabModel with ChangeNotifier {
     true,
     true,
     !isWeb && bind.mainGetLocalOption(key: "disable-discovery-panel") != "Y",
-    !(bind.isDisableAb() || bind.isDisableAccount()),
-    !(bind.isDisableGroupPanel() || bind.isDisableAccount()),
+    // [LAN-ONLY] "Address book" and "Accessible devices" need a RustDesk
+    // account and the public API server; both are unavailable on a LAN-only
+    // build, so keep the enum slots but never expose the tabs.
+    false,
+    false,
   ]);
   final List<bool> _isVisible = List.filled(maxTabCount, true, growable: false);
   List<bool> get isVisibleEnabled => () {
