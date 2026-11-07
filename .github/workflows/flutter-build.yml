@@ -59,11 +59,15 @@ env:
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_CMAKE_VERSION: "4.3.0"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836" # 2025.01.13, got "/opt/artifacts/vcpkg/vcpkg: No such file or directory" with latest version
-  VERSION: "1.5.7"
+  VERSION: "1.5.9"
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
   MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
+  # [LAN-ONLY] Non-empty only when an Apple notarization key is configured.
+  # Its presence distinguishes a real Developer ID build (runtime + notarize)
+  # from a self-signed certificate build (stable identity, no notarization).
+  MACOS_NOTARIZE_JSON: "${{ secrets.MACOS_NOTARIZE_JSON }}"
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   PUBLISH_UPDATE_METADATA: "${{ inputs.publish-update-metadata }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
@@ -974,8 +978,24 @@ jobs:
           security default-keychain -s rustdesk.keychain
           security find-identity -v
 
+      # [LAN-ONLY] A self-signed "Code Signing" certificate is not in Apple's
+      # trust store, so codesign cannot resolve it as a valid identity. Trust
+      # it once on this runner. Developer ID builds chain to Apple already and
+      # are skipped (they set MACOS_NOTARIZE_JSON).
+      - name: Trust self-signed codesign certificate
+        if: env.MACOS_P12_BASE64 != null && env.MACOS_NOTARIZE_JSON == ''
+        env:
+          P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+        run: |
+          printf '%s' "$P12_BASE64" | base64 --decode > /tmp/rd-codesign.p12
+          openssl pkcs12 -in /tmp/rd-codesign.p12 -passin "pass:$P12_PASSWORD" -nokeys -clcerts -out /tmp/rd-codesign.pem
+          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/rd-codesign.pem
+          rm -f /tmp/rd-codesign.p12 /tmp/rd-codesign.pem
+          security find-identity -v -p codesigning || true
+
       - name: Import notarize key
-        if: env.MACOS_P12_BASE64 != null
+        if: env.MACOS_P12_BASE64 != null && env.MACOS_NOTARIZE_JSON != ''
         uses: timheuer/base64-to-file@adaa40c0c581f276132199d4cf60afa07ce60eac # v1.2
         with:
           # https://gregoryszorc.com/docs/apple-codesign/stable/apple_codesign_rcodesign.html#notarizing-and-stapling
@@ -984,7 +1004,7 @@ jobs:
           encodedString: ${{ secrets.MACOS_NOTARIZE_JSON }}
 
       - name: Install rcodesign tool
-        if: env.MACOS_P12_BASE64 != null
+        if: env.MACOS_P12_BASE64 != null && env.MACOS_NOTARIZE_JSON != ''
         shell: bash
         run: |
           pushd /tmp
@@ -1142,9 +1162,16 @@ jobs:
       # Xcode's ad-hoc signing, which breaks the bundle seal. On Apple Silicon a
       # broken signature is killed at launch with no override, even after removing
       # quarantine. Re-sign ad-hoc here so the unsigned dmg is actually launchable.
-      # When a Developer ID cert is present the later signed step overwrites this.
+      # When a certificate secret is present the later signed step overwrites this.
+      # MACOS_SIGN_MODE=adhoc keeps Hardened Runtime OFF: ad-hoc + runtime is what
+      # killed 1.5.7 at launch. With no certificate secrets this is the final
+      # signature; it is launchable, but TCC binds the grant to the CDHash, so
+      # every rebuild needs re-authorization. Configure the MACOS_* secrets to
+      # make the signed step use a stable identity instead.
       - name: Ad-hoc re-sign unsigned macOS app
         if: env.UPLOAD_ARTIFACT == 'true'
+        env:
+          MACOS_SIGN_MODE: adhoc
         run: |
           bash ./.github/scripts/sign-macos-app.sh \
             ./flutter/build/macos/Build/Products/Release/RustDesk.app \
@@ -1159,15 +1186,21 @@ jobs:
           sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
           create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
 
-      - name: Upload unsigned macOS app
-        if: env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
-          path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg # can not upload the directory directly or tar.gz, which destroy the link structure, causing the codesign failed
+      # [LAN-ONLY] The final dmg is uploaded after "Rename rustdesk" (see below)
+      # so publish-lan-release receives the certificate-signed build whenever
+      # MACOS_* secrets are configured, not the earlier ad-hoc dmg.
 
+      # [LAN-ONLY] Two signing modes share this step:
+      #   developerid = Apple Developer ID + notarization key  -> runtime, timestamp, notarize
+      #   selfsigned  = self-signed "Code Signing" certificate -> fixed cert, no notarize
+      # A fixed certificate MAY give TCC a stable designated requirement, but this
+      # is NOT guaranteed: non-Apple certs often still produce a cdhash-based DR.
+      # sign-macos-app.sh prints the DR; verify with `codesign -d -r-` on a real
+      # Mac before assuming ScreenCapture grants survive rebuilds.
       - name: Codesign app and create signed dmg
         if: env.MACOS_P12_BASE64 != null && env.UPLOAD_ARTIFACT == 'true'
+        env:
+          MACOS_SIGN_MODE: ${{ env.MACOS_NOTARIZE_JSON != '' && 'developerid' || 'selfsigned' }}
         run: |
           # Patch create-dmg to give more attempts to unmount image
           CREATE_DMG="$(command -v create-dmg)"
@@ -1191,9 +1224,17 @@ jobs:
             fi
           fi
           create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
-          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
-          # notarize the rustdesk-${{ env.VERSION }}.dmg
-          rcodesign notary-submit --api-key-path ${{ github.workspace }}/rustdesk.json  --staple rustdesk-${{ env.VERSION }}.dmg
+          if [ "$MACOS_SIGN_MODE" = "developerid" ]; then
+            codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
+          else
+            codesign --force -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
+          fi
+          # notarize only real Developer ID builds; self-signed certs cannot be notarized
+          if [ "$MACOS_SIGN_MODE" = "developerid" ]; then
+            rcodesign notary-submit --api-key-path ${{ github.workspace }}/rustdesk.json  --staple rustdesk-${{ env.VERSION }}.dmg
+          else
+            echo "::notice::Self-signed identity: skipping notarization (no Apple Developer account)."
+          fi
 
       - name: Rename rustdesk
         if: env.UPLOAD_ARTIFACT == 'true'
@@ -1206,6 +1247,18 @@ jobs:
               mv "rustdesk-${VERSION}.dmg" "rustdesk-${VERSION}-${ARCH}.dmg"
           fi
           test -f "rustdesk-${VERSION}-${ARCH}.dmg"
+
+      # [LAN-ONLY] Upload the FINAL dmg (ad-hoc when no secrets, certificate-signed
+      # otherwise) under the artifact name consumed by publish-lan-release.
+      # This step used to run before "Codesign app and create signed dmg", which
+      # made the LAN Release ship the ad-hoc dmg even when a cert was configured.
+      - name: Upload unsigned macOS app
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
+          path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg
+          if-no-files-found: error
 
       - name: Upload signed macOS DMG
         if: env.UPLOAD_ARTIFACT == 'true' && env.PUBLISH_UPDATE_METADATA == 'true' && env.MACOS_P12_BASE64 != null

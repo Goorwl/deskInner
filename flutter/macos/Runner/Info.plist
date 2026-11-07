@@ -43,6 +43,10 @@
 	<string>MainMenu</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record the sound from microphone for the purpose of the remote desktop.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>RustDesk needs Screen Recording permission to share this Mac's screen with a remote client.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>RustDesk needs system audio capture permission to stream this Mac's sound to a remote client.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
     <key>LSUIElement</key>
