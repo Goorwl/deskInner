@@ -3039,13 +3039,15 @@ jobs:
   # the dmg/exe/msi only as Actions artifacts and the Releases page empty.
   # Collect the two installer artifacts once both builds succeed and publish
   # them to the configured upload-tag Release with the built-in GITHUB_TOKEN.
-  # Before uploading, installer assets from an older VERSION are removed:
+  # Installer assets from an older VERSION are removed after the upload:
   # --clobber only replaces identically named files, so a version bump would
   # otherwise leave several generations of packages in one Release.
   publish-lan-release:
     needs: [build-for-windows-flutter, build-for-macOS]
     if: ${{ inputs.desktop-only && inputs.upload-artifact }}
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - name: Download Windows installers
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -3076,22 +3078,31 @@ jobs:
               --notes "LAN-only desktop packages (unsigned / ad-hoc signed)."
           fi
 
-          # Keep only installers of the current VERSION. sbom and other
-          # non-installer assets are left alone.
-          gh release view "$TAG" --json assets --jq '.assets[] | [.name, (.id|tostring)] | @tsv' \
-            | while IFS=$'\t' read -r name id; do
-                case "$name" in
-                  *.dmg|*.exe|*.msi)
-                    case "$name" in
-                      *"-${VERSION}-"*) ;;
-                      *) printf 'removing stale asset: %s\n' "$name"
-                         gh api -X DELETE "repos/$GH_REPO/releases/assets/$id" >/dev/null ;;
-                    esac
-                    ;;
-                esac
-              done
-
           gh release upload "$TAG" "${files[@]}" --clobber
+
+          # Keep only installers of the current VERSION. sbom and other
+          # non-installer assets are left alone. Asset ids must come from the
+          # REST endpoint: DELETE /releases/assets/<id> needs a numeric REST
+          # id, which `gh release view --json assets` does not guarantee.
+          stale="$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
+            --jq '.assets[] | [.name, (.id|tostring)] | @tsv' || true)"
+          while IFS=$'\t' read -r name id; do
+            [ -n "$name" ] || continue
+            case "$name" in
+              *.dmg|*.exe|*.msi) ;;
+              *) continue ;;
+            esac
+            case "$name" in
+              *"-${VERSION}-"*) continue ;;
+            esac
+            case "$id" in
+              ''|*[!0-9]*) printf 'warning: unexpected asset id %s for %s\n' "$id" "$name"
+                           continue ;;
+            esac
+            printf 'removing stale asset: %s (id=%s)\n' "$name" "$id"
+            gh api -X DELETE "repos/$GH_REPO/releases/assets/$id" >/dev/null \
+              || printf 'warning: could not remove stale asset %s\n' "$name"
+          done <<< "$stale"
 
           {
             printf '局域网专用 RustDesk %s 桌面安装包\n\n' "$VERSION"
