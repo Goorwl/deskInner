@@ -155,7 +155,7 @@ pub fn is_can_screen_recording(prompt: bool) -> bool {
 
 // macOS >= 10.15
 // https://stackoverflow.com/questions/56597221/detecting-screen-recording-settings-on-macos-catalina/
-// remove just one app from all the permissions: tccutil reset All com.carriez.rustdesk
+// remove just one app from all the permissions: tccutil reset All com.goorwl.destinner
 fn unsafe_is_can_screen_recording(prompt: bool) -> bool {
     // we got some report that we show no permission even after set it, so we try to use new api for screen recording check
     // the new api is only available on macOS >= 10.15, but on stackoverflow, some people said it works on >= 10.16 (crash on 10.15),
@@ -2200,11 +2200,11 @@ mod update_tests {
         }
         std::fs::write(
             installed.join("Contents/Info.plist"),
-            info("com.carriez.rustdesk"),
+            info("com.goorwl.destinner"),
         )
         .unwrap();
 
-        for (bundle_id, accepted) in [("com.carriez.rustdesk", true), ("example.other", false)] {
+        for (bundle_id, accepted) in [("com.goorwl.destinner", true), ("example.other", false)] {
             std::fs::write(candidate.join("Contents/Info.plist"), info(bundle_id)).unwrap();
             assert_eq!(
                 verify_update_app_identity(&installed, &candidate).is_ok(),

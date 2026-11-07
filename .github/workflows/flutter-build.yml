@@ -59,7 +59,7 @@ env:
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_CMAKE_VERSION: "4.3.0"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836" # 2025.01.13, got "/opt/artifacts/vcpkg/vcpkg: No such file or directory" with latest version
-  VERSION: "1.5.9"
+  VERSION: "1.5.10"
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -1191,12 +1191,20 @@ jobs:
       # MACOS_* secrets are configured, not the earlier ad-hoc dmg.
 
       # [LAN-ONLY] Two signing modes share this step:
-      #   developerid = Apple Developer ID + notarization key  -> runtime, timestamp, notarize
-      #   selfsigned  = self-signed "Code Signing" certificate -> fixed cert, no notarize
-      # A fixed certificate MAY give TCC a stable designated requirement, but this
-      # is NOT guaranteed: non-Apple certs often still produce a cdhash-based DR.
-      # sign-macos-app.sh prints the DR; verify with `codesign -d -r-` on a real
-      # Mac before assuming ScreenCapture grants survive rebuilds.
+      #   developerid = Apple Developer ID + notarization key -> runtime, timestamp, notarize
+      #   selfsigned  = fixed "Code Signing" certificate      -> fixed cert, no notarize
+      # A stable certificate identity produces a DR of the form
+      #   identifier "com.goorwl.destinner" and certificate leaf = H"<cert fingerprint>"
+      # (an Apple-issued identity adds `anchor apple generic`). That DR is
+      # byte-identical across rebuilds, so TCC grants for ScreenCapture,
+      # Accessibility and Input Monitoring survive new builds.
+      # Verified on macOS 27.2: two different Mach-O binaries signed with one
+      # self-signed identity produced identical DRs; ad-hoc signing produced
+      # different `cdhash H"..."` DRs and loses the grant on every rebuild.
+      # If the DR printed by sign-macos-app.sh still contains `cdhash`, the cert
+      # was not trusted on this runner (find-identity shows 0 valid identities)
+      # and codesign kept the earlier ad-hoc signature. Check the
+      # "Trust self-signed codesign certificate" step.
       - name: Codesign app and create signed dmg
         if: env.MACOS_P12_BASE64 != null && env.UPLOAD_ARTIFACT == 'true'
         env:

@@ -45,9 +45,15 @@ codesign "${sign_args[@]}" --generate-entitlement-der \
 codesign --verify --deep --strict --verbose=2 "$app_path"
 
 # [LAN-ONLY] Print the designated requirement. TCC binds ScreenCapture grants
-# to this requirement: a cdhash-based DR (typical for ad-hoc / non-Apple certs)
-# means the grant dies on every rebuild, while an Apple Developer ID DR with
-# `anchor apple generic` survives. Keep this visible in CI logs for auditing.
+# to this requirement, not to the bundle id shown in System Settings.
+# Verified on macOS 27.2 by signing two different Mach-O binaries per identity:
+#   ad-hoc (-s -)        -> cdhash H"..."            -> DR changes, grant dies
+#   self-signed cert     -> identifier + certificate leaf = H"<fp>"  -> identical
+#   Apple-issued cert    -> the above + anchor apple generic           -> identical
+# A fixed certificate identity therefore keeps grants across rebuilds, Apple
+# issued or not. If the DR below still contains `cdhash`, the certificate was
+# not trusted on this runner (find-identity shows 0 valid identities) and
+# codesign kept the earlier ad-hoc signature. Keep this in CI logs for auditing.
 echo "=== designated requirement for $app_path ==="
 codesign -d -r- "$app_path" 2>&1 || true
 
