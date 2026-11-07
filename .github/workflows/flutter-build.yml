@@ -63,11 +63,8 @@ env:
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
-  MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
-  # [LAN-ONLY] Non-empty only when an Apple notarization key is configured.
-  # Its presence distinguishes a real Developer ID build (runtime + notarize)
-  # from a self-signed certificate build (stable identity, no notarization).
-  MACOS_NOTARIZE_JSON: "${{ secrets.MACOS_NOTARIZE_JSON }}"
+  # [LAN-ONLY] No MACOS_* signing secrets: this is a self-used LAN build that
+  # always ships one ad-hoc signed dmg. See 27 in BUILD-PACKAGES.md.
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   PUBLISH_UPDATE_METADATA: "${{ inputs.publish-update-metadata }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
@@ -964,62 +961,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Import the codesign cert
-        if: env.MACOS_P12_BASE64 != ''
-        uses: apple-actions/import-codesign-certs@253ddeeac23f2bdad1646faac5c8c2832e800071 # v1
-        with:
-          p12-file-base64: ${{ secrets.MACOS_P12_BASE64 }}
-          p12-password: ${{ secrets.MACOS_P12_PASSWORD }}
-          keychain: rustdesk
-
-      - name: Check sign and import sign key
-        if: env.MACOS_P12_BASE64 != ''
-        run: |
-          security default-keychain -s rustdesk.keychain
-          security find-identity -v
-
-      # [LAN-ONLY] A self-signed "Code Signing" certificate is not in Apple's
-      # trust store, so codesign cannot resolve it as a valid identity. Trust
-      # it once on this runner. Developer ID builds chain to Apple already and
-      # are skipped (they set MACOS_NOTARIZE_JSON).
-      - name: Trust self-signed codesign certificate
-        if: env.MACOS_P12_BASE64 != '' && env.MACOS_NOTARIZE_JSON == ''
-        # [LAN-ONLY] add-trusted-cert can hang on a trustd GUI prompt on hosted
-        # runners. Cap the step and degrade to a warning instead of failing the
-        # whole macOS job: the on-device test showed the imported p12 alone is
-        # enough for `codesign -s <CN>` to resolve a valid identity.
-        timeout-minutes: 2
-        continue-on-error: true
-        env:
-          P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
-          P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
-        run: |
-          printf '%s' "$P12_BASE64" | base64 --decode > /tmp/rd-codesign.p12
-          openssl pkcs12 -in /tmp/rd-codesign.p12 -passin "pass:$P12_PASSWORD" -nokeys -clcerts -out /tmp/rd-codesign.pem
-          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/rd-codesign.pem \
-            || echo "::warning::Self-signed cert trust failed; the imported p12 identity is still used by codesign."
-          rm -f /tmp/rd-codesign.p12 /tmp/rd-codesign.pem
-          security find-identity -v -p codesigning || true
-
-      - name: Import notarize key
-        if: env.MACOS_P12_BASE64 != '' && env.MACOS_NOTARIZE_JSON != ''
-        uses: timheuer/base64-to-file@adaa40c0c581f276132199d4cf60afa07ce60eac # v1.2
-        with:
-          # https://gregoryszorc.com/docs/apple-codesign/stable/apple_codesign_rcodesign.html#notarizing-and-stapling
-          fileName: rustdesk.json
-          fileDir: ${{ github.workspace }}
-          encodedString: ${{ secrets.MACOS_NOTARIZE_JSON }}
-
-      - name: Install rcodesign tool
-        if: env.MACOS_P12_BASE64 != '' && env.MACOS_NOTARIZE_JSON != ''
-        shell: bash
-        run: |
-          pushd /tmp
-          wget https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.22.0/apple-codesign-0.22.0-macos-universal.tar.gz
-          tar -zxvf apple-codesign-0.22.0-macos-universal.tar.gz
-          mv apple-codesign-0.22.0-macos-universal/rcodesign /usr/local/bin
-          popd
-
       - name: Install build runtime
         run: |
           brew install llvm create-dmg
@@ -1168,17 +1109,13 @@ jobs:
       # [LAN-ONLY] build.py copies target/release/service into the app bundle AFTER
       # Xcode's ad-hoc signing, which breaks the bundle seal. On Apple Silicon a
       # broken signature is killed at launch with no override, even after removing
-      # quarantine. Re-sign ad-hoc here so the unsigned dmg is actually launchable.
-      # When a certificate secret is present the later signed step overwrites this.
-      # MACOS_SIGN_MODE=adhoc keeps Hardened Runtime OFF: ad-hoc + runtime is what
-      # killed 1.5.7 at launch. With no certificate secrets this is the final
-      # signature; it is launchable, but TCC binds the grant to the CDHash, so
-      # every rebuild needs re-authorization. Configure the MACOS_* secrets to
-      # make the signed step use a stable identity instead.
+      # quarantine. Re-sign ad-hoc here so the dmg is actually launchable.
+      # [LAN-ONLY] Hardened Runtime must stay OFF: ad-hoc + runtime is what
+      # killed 1.5.7 at launch (AMFI rejects the bundled dylibs). This is the
+      # only signature step; TCC binds grants to the cdhash, so a new build
+      # needs one re-authorization. That is accepted for a self-used LAN app.
       - name: Ad-hoc re-sign unsigned macOS app
         if: env.UPLOAD_ARTIFACT == 'true'
-        env:
-          MACOS_SIGN_MODE: adhoc
         run: |
           bash ./.github/scripts/sign-macos-app.sh \
             ./flutter/build/macos/Build/Products/Release/RustDesk.app \
@@ -1193,67 +1130,6 @@ jobs:
           sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
           create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
 
-      # [LAN-ONLY] The final dmg is uploaded after "Rename rustdesk" (see below)
-      # so publish-lan-release receives the certificate-signed build whenever
-      # MACOS_* secrets are configured, not the earlier ad-hoc dmg.
-
-      # [LAN-ONLY] Two signing modes share this step:
-      #   developerid = Apple Developer ID + notarization key -> runtime, timestamp, notarize
-      #   selfsigned  = fixed "Code Signing" certificate      -> fixed cert, no notarize
-      # A stable certificate identity produces a DR of the form
-      #   identifier "com.goorwl.destinner" and certificate leaf = H"<cert fingerprint>"
-      # (an Apple-issued identity adds `anchor apple generic`). That DR is
-      # byte-identical across rebuilds, so TCC grants for ScreenCapture,
-      # Accessibility and Input Monitoring survive new builds.
-      # Verified on macOS 27.2: two different Mach-O binaries signed with one
-      # self-signed identity produced identical DRs; ad-hoc signing produced
-      # different `cdhash H"..."` DRs and loses the grant on every rebuild.
-      # NOTE: sign-macos-app.sh runs TWICE when these secrets are set - once in
-      # "Ad-hoc re-sign" (-s -) and once here. A `cdhash H"..."` DR from the
-      # FIRST call is expected. Only the DR printed inside THIS step is
-      # authoritative. If it still contains cdhash, `codesign -s <identity>`
-      # could not resolve the certificate; the script has `set -euo pipefail`
-      # and fails this step, it does NOT silently keep the ad-hoc signature.
-      # Check "Import the codesign cert" / "Trust self-signed codesign certificate".
-      - name: Codesign app and create signed dmg
-        if: env.MACOS_P12_BASE64 != '' && env.UPLOAD_ARTIFACT == 'true'
-        env:
-          MACOS_SIGN_MODE: ${{ env.MACOS_NOTARIZE_JSON != '' && 'developerid' || 'selfsigned' }}
-        run: |
-          # Patch create-dmg to give more attempts to unmount image
-          CREATE_DMG="$(command -v create-dmg)"
-          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
-          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
-          # Unlock keychain
-          security default-keychain -s rustdesk.keychain
-          security unlock-keychain -p ${{ secrets.MACOS_P12_PASSWORD }} rustdesk.keychain
-          # start sign the rustdesk.app and dmg
-          rm -rf *.dmg || true
-          # the identity secret carries its own shell quoting, so expand it inline like the dmg codesign below
-          bash ./.github/scripts/sign-macos-app.sh \
-            ./flutter/build/macos/Build/Products/Release/RustDesk.app \
-            ${{ secrets.MACOS_CODESIGN_IDENTITY }} \
-            ./flutter/macos/Runner/Release.entitlements
-          if [ "$PUBLISH_UPDATE_METADATA" = "true" ]; then
-            reported_version="$(./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/RustDesk --version)"
-            if [ "$reported_version" != "$VERSION" ]; then
-              echo "::error::RustDesk reports version '$reported_version', expected '$VERSION'"
-              exit 1
-            fi
-          fi
-          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
-          if [ "$MACOS_SIGN_MODE" = "developerid" ]; then
-            codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
-          else
-            codesign --force -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
-          fi
-          # notarize only real Developer ID builds; self-signed certs cannot be notarized
-          if [ "$MACOS_SIGN_MODE" = "developerid" ]; then
-            rcodesign notary-submit --api-key-path ${{ github.workspace }}/rustdesk.json  --staple rustdesk-${{ env.VERSION }}.dmg
-          else
-            echo "::notice::Self-signed identity: skipping notarization (no Apple Developer account)."
-          fi
-
       - name: Rename rustdesk
         if: env.UPLOAD_ARTIFACT == 'true'
         shell: bash
@@ -1266,24 +1142,14 @@ jobs:
           fi
           test -f "rustdesk-${VERSION}-${ARCH}.dmg"
 
-      # [LAN-ONLY] Upload the FINAL dmg (ad-hoc when no secrets, certificate-signed
-      # otherwise) under the artifact name consumed by publish-lan-release.
-      # This step used to run before "Codesign app and create signed dmg", which
-      # made the LAN Release ship the ad-hoc dmg even when a cert was configured.
+      # [LAN-ONLY] Upload the ad-hoc signed dmg under the artifact name consumed
+      # by publish-lan-release.
       - name: Upload unsigned macOS app
         if: env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
           path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg
-          if-no-files-found: error
-
-      - name: Upload signed macOS DMG
-        if: env.UPLOAD_ARTIFACT == 'true' && env.PUBLISH_UPDATE_METADATA == 'true' && env.MACOS_P12_BASE64 != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: macos-${{ matrix.job.arch }}-dmg
-          path: ./rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg
           if-no-files-found: error
 
       - name: Publish DMG package

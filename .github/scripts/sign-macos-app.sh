@@ -6,17 +6,13 @@ app_path=$1
 identity=$2
 entitlements=$3
 
-# [LAN-ONLY] --options runtime (Hardened Runtime) is only valid for an
-# Apple-issued Developer ID identity. Applying it to ad-hoc (-) or self-signed
-# builds makes AMFI kill the app at launch: every bundled dylib and the
-# `service` helper is signed without a Team ID, so library validation rejects
-# them. That is the 1.5.7 "click -> instant quit with no dialog" bug.
-# Only real Developer ID builds opt in; they are also the only ones that can be
-# notarized. MACOS_SIGN_MODE is set by .github/workflows/flutter-build.yml.
+# [LAN-ONLY] Hardened Runtime (--options runtime) is only valid for an
+# Apple-issued Developer ID identity. Applying it to an ad-hoc (-) signature
+# makes AMFI kill the app at launch: every bundled dylib and the `service`
+# helper is signed without a Team ID, so library validation rejects them.
+# That was the 1.5.7 "click -> instant quit with no dialog" bug.
+# This script now has exactly one mode: ad-hoc. Never add --options runtime.
 sign_args=(--force --sign "$identity")
-if [[ "${MACOS_SIGN_MODE:-adhoc}" == "developerid" ]]; then
-  sign_args+=(--options runtime --timestamp)
-fi
 
 frameworks_path="$app_path/Contents/Frameworks"
 if [[ -d "$frameworks_path" ]]; then
@@ -44,23 +40,9 @@ codesign "${sign_args[@]}" --generate-entitlement-der \
   --entitlements "$entitlements" "$app_path"
 codesign --verify --deep --strict --verbose=2 "$app_path"
 
-# [LAN-ONLY] Print the designated requirement. TCC binds ScreenCapture grants
-# to this requirement, not to the bundle id shown in System Settings.
-# Verified on macOS 27.2 by signing two different Mach-O binaries per identity:
-#   ad-hoc (-s -)        -> cdhash H"..."            -> DR changes, grant dies
-#   self-signed cert     -> identifier + certificate leaf = H"<fp>"  -> identical
-#   Apple-issued cert    -> the above + anchor apple generic           -> identical
-# A fixed certificate identity therefore keeps grants across rebuilds, Apple
-# issued or not.
-# NOTE: this script runs TWICE when MACOS_* secrets are configured (first in
-# "Ad-hoc re-sign" with -s -, then in "Codesign app and create signed dmg").
-# A cdhash DR from the first call is EXPECTED; only the second call is
-# authoritative. If that one still contains cdhash, `codesign -s` could not
-# resolve the identity - under `set -euo pipefail` this fails the step, it does
-# not silently fall back to ad-hoc. Check the cert import / trust steps.
-echo "sign mode: ${MACOS_SIGN_MODE:-adhoc}"
-echo "=== designated requirement for $app_path ==="
-codesign -d -r- "$app_path" 2>&1 || true
+# [LAN-ONLY] ad-hoc DR is cdhash-based: ScreenCapture / Accessibility / Input
+# Monitoring grants are re-bound on every rebuild. Run fix-perm.command once
+# after installing a new build.
 
 actual_entitlements=$(codesign -d --entitlements :- "$app_path" 2>/dev/null)
 audio_input=$(plutil -extract 'com\.apple\.security\.device\.audio-input' raw - \
