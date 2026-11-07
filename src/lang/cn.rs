@@ -456,7 +456,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Your Device", "你的设备"),
         ("empty_recent_tip", "无最近会话，是时候开始新会话了！"),
         ("empty_favorite_tip", "还没有收藏的被控端？找一个人连接并将其添加到收藏吧！"),
-        ("empty_lan_tip", "情况不妙，似乎未发现任何被控端！"),
+        ("empty_lan_tip", "尚未发现局域网设备，点击右上角刷新按钮扫描"),
         ("empty_address_book_tip", "似乎目前地址簿内无被控端"),
         ("Empty Username", "空用户名"),
         ("Empty Password", "空密码"),

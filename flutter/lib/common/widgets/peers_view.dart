@@ -477,8 +477,10 @@ class DiscoveredPeersView extends BasePeersView {
   @override
   Widget build(BuildContext context) {
     final widget = super.build(context);
+    // [LAN-ONLY] Only load the persisted peer cache here. Probing the LAN is
+    // now an explicit user action (the scan button in peer_tab_page.dart), so
+    // rebuilding this widget no longer sprays broadcast pings on every layout.
     bind.mainLoadLanPeers();
-    bind.mainDiscover();
     return widget;
   }
 }

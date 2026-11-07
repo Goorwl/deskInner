@@ -38,6 +38,12 @@ class _TabEntry {
   _TabEntry(this.widget, [this.load]);
 }
 
+// [LAN-ONLY] Shared by the "Discovered" tab scan button. A top-level Rx is used
+// because Dart field initializers cannot reference `this`. One LAN probe takes
+// about 3s (src/lan.rs wait_response), so keep the icon spinning and ignore
+// repeated taps until it finishes. No background timer, no startup broadcast.
+final RxBool lanScanLoading = false.obs;
+
 EdgeInsets? _menuPadding() {
   return (isDesktop || isWebDesktop) ? kDesktopMenuPadding : null;
 }
@@ -51,9 +57,22 @@ class _PeerTabPageState extends State<PeerTabPage>
     _TabEntry(FavoritePeersView(
       menuPadding: _menuPadding(),
     )),
-    _TabEntry(DiscoveredPeersView(
-      menuPadding: _menuPadding(),
-    )),
+    _TabEntry(
+      DiscoveredPeersView(
+        menuPadding: _menuPadding(),
+      ),
+      // [LAN-ONLY] The only LAN probe trigger. Small stable LANs do not need a
+      // periodic scanner: an explicit refresh is enough and never touches the
+      // network unless the user asks for it.
+      ({dynamic hint}) {
+        if (lanScanLoading.value) return;
+        lanScanLoading.value = true;
+        bind.mainLoadLanPeers();
+        bind.mainDiscover();
+        Future.delayed(const Duration(seconds: 3),
+            () => lanScanLoading.value = false);
+      },
+    ),
     _TabEntry(
         AddressBook(
           menuPadding: _menuPadding(),
@@ -576,6 +595,7 @@ class _PeerTabPageState extends State<PeerTabPage>
     final model = Provider.of<PeerTabModel>(context);
     return [
       const PeerSearchBar().marginOnly(right: 13),
+      _createRefresh(index: PeerTabIndex.lan, loading: lanScanLoading),
       _createRefresh(
           index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),
       _createRefresh(
@@ -647,6 +667,8 @@ class _PeerTabPageState extends State<PeerTabPage>
     // Always show search, refresh
     List<Widget> actions = [
       const PeerSearchBar(),
+      if (model.currentTab == PeerTabIndex.lan.index)
+        _createRefresh(index: PeerTabIndex.lan, loading: lanScanLoading),
       if (model.currentTab == PeerTabIndex.ab.index)
         _createRefresh(
             index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),

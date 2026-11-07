@@ -42,25 +42,30 @@ pub(super) fn start_listening() -> ResultType<()> {
                             if p.id == id {
                                 continue;
                             }
-                            if let Some(self_addr) = get_ipaddr_by_peer(&addr) {
-                                let mut msg_out = Message::new();
-                                let mut hostname = crate::whoami_hostname();
-                                // The default hostname is "localhost" which is a bit confusing
-                                if hostname == "localhost" {
-                                    hostname = "unknown".to_owned();
-                                }
-                                let peer = PeerDiscovery {
-                                    cmd: "pong".to_owned(),
-                                    mac: get_mac(&self_addr),
-                                    id,
-                                    hostname,
-                                    username: crate::platform::get_active_username(),
-                                    platform: whoami::platform().to_string(),
-                                    ..Default::default()
-                                };
-                                msg_out.set_peer_discovery(peer);
-                                socket.send_to(&msg_out.write_to_bytes()?, addr).ok();
+                            // [LAN-ONLY] Always answer a ping. A failed local
+                            // interface lookup used to drop the pong entirely,
+                            // making this host invisible to a manual scan; an
+                            // empty MAC is fine (wait_response still accepts it).
+                            let mac = get_ipaddr_by_peer(&addr)
+                                .map(|self_addr| get_mac(&self_addr))
+                                .unwrap_or_default();
+                            let mut msg_out = Message::new();
+                            let mut hostname = crate::whoami_hostname();
+                            // The default hostname is "localhost" which is a bit confusing
+                            if hostname == "localhost" {
+                                hostname = "unknown".to_owned();
                             }
+                            let peer = PeerDiscovery {
+                                cmd: "pong".to_owned(),
+                                mac,
+                                id,
+                                hostname,
+                                username: crate::platform::get_active_username(),
+                                platform: whoami::platform().to_string(),
+                                ..Default::default()
+                            };
+                            msg_out.set_peer_discovery(peer);
+                            socket.send_to(&msg_out.write_to_bytes()?, addr).ok();
                         }
                     }
                     _ => {}
